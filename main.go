@@ -31,13 +31,13 @@ type Item struct {
 	Repository ItemRepository `json:"repository"`
 }
 
-type ItemListByRepo map[string][]*Item
+type ItemListByRepo map[string][]Item
 
 type Config struct {
-	org        string
-	asMarkdown bool
-	asJSON     bool
-	limit      int
+	Org        string
+	AsMarkdown bool
+	AsJSON     bool
+	Limit      int
 }
 
 const terminalTemplate = `{{range $repo, $items := .}}{{$repo}}
@@ -54,23 +54,27 @@ func parseFlags() Config {
 	flag.StringVar(&org, "org", "", "The organization to search for PRs")
 	flag.BoolVar(&asMarkdown, "markdown", false, "Output as markdown")
 	flag.BoolVar(&asJSON, "json", false, "Output as JSON")
-	flag.IntVar(&limit, "limit", 10, "The max number of results")
+	flag.IntVar(&limit, "limit", 10, "The max number of results (max 100)")
 	flag.Parse()
 
 	if asMarkdown && asJSON {
-		log.Fatal("Cannot use both markdown and JSON output")
+		log.Fatal("cannot use both --markdown and --json flags")
+	}
+
+	if limit < 1 || limit > 100 {
+		log.Fatal("limit must be between 1 and 100")
 	}
 
 	return Config{
-		org:        org,
-		asMarkdown: asMarkdown,
-		asJSON:     asJSON,
-		limit:      limit,
+		Org:        org,
+		AsMarkdown: asMarkdown,
+		AsJSON:     asJSON,
+		Limit:      limit,
 	}
 
 }
 
-func fetchPRs(client *api.GraphQLClient, org string, limit int) (int, ItemListByRepo, error) {
+func fetchPRs(client *api.GraphQLClient, org string, limit int) (ItemListByRepo, error) {
 	searchQuery := "is:pr is:open author:@me"
 	if org != "" {
 		searchQuery += " org:" + url.QueryEscape(org)
@@ -91,24 +95,23 @@ func fetchPRs(client *api.GraphQLClient, org string, limit int) (int, ItemListBy
 
 	variables := map[string]any{
 		"query": graphql.String(searchQuery),
-		"first": graphql.Int(min(limit, 100)),
+		"first": graphql.Int(limit),
 	}
 
 	apiError := client.Query("Search", &query, variables)
-	count := len(query.Search.Nodes)
 	itemList := make(ItemListByRepo)
 
 	for _, item := range query.Search.Nodes {
 		key := item.PullRequest.Repository.NameWithOwner
 
-		itemList[key] = append(itemList[key], &Item{
+		itemList[key] = append(itemList[key], Item{
 			Title:      item.PullRequest.Title,
 			Url:        item.PullRequest.Url,
 			Number:     item.PullRequest.Number,
 			Repository: item.PullRequest.Repository,
 		})
 	}
-	return count, itemList, apiError
+	return itemList, apiError
 }
 
 func renderTerminal(templateString string, itemList ItemListByRepo) (string, error) {
@@ -143,30 +146,30 @@ func run() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	count, itemList, err := fetchPRs(client, cfg.org, cfg.limit)
+	itemList, err := fetchPRs(client, cfg.Org, cfg.Limit)
 	if err != nil {
-		return "", nil
+		return "", err
 	}
 
-	if count == 0 {
+	if len(itemList) == 0 {
 		fmt.Fprintln(os.Stderr, "No PRs found.")
 		return "", nil
 	}
 
-	if cfg.asMarkdown {
+	if cfg.AsMarkdown {
 		var str strings.Builder
 		for key, items := range itemList {
 			str.WriteString(fmt.Sprintf("* **%s**\n", key))
 
 			for _, item := range items {
-				str.WriteString(fmt.Sprintf(". * [#%d - %s](%s)\n", item.Number, item.Title, item.Url))
+				str.WriteString(fmt.Sprintf("  * [#%d - %s](%s)\n", item.Number, item.Title, item.Url))
 			}
 		}
 		return str.String(), nil
 	}
-	if cfg.asJSON {
-		json, err := json.MarshalIndent(itemList, "", "  ")
-		return string(json), err
+	if cfg.AsJSON {
+		jsonBytes, err := json.MarshalIndent(itemList, "", "  ")
+		return string(jsonBytes), err
 	}
 
 	return renderTerminal(terminalTemplate, itemList)
@@ -183,7 +186,7 @@ func main() {
 	p.Stop()
 
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("Error: %v", err)
 	}
 	fmt.Print(str)
 }
