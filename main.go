@@ -14,33 +14,47 @@ import (
 	"github.com/cli/go-gh/v2/pkg/api"
 	"github.com/cli/go-gh/v2/pkg/template"
 	"github.com/cli/go-gh/v2/pkg/term"
+	graphql "github.com/cli/shurcooL-graphql"
 	"github.com/yarlson/pin"
 )
 
-type SearchResponse struct {
-	Items []struct {
-		Title  string `json:"title"`
-		URL    string `json:"html_url"`
-		Number int    `json:"number"`
-	} `json:"items"`
+type ItemRepository struct {
+	NameWithOwner string `json:"nameWithOwner"`
+	Name          string `json:"name"`
+	Url           string `json:"url"`
 }
+
+type Item struct {
+	Title      string         `json:"title"`
+	Url        string         `json:"url"`
+	Number     int            `json:"number"`
+	Repository ItemRepository `json:"repository"`
+}
+
+type ItemListByRepo map[string][]*Item
 
 type Config struct {
 	org        string
 	asMarkdown bool
 	asJSON     bool
+	limit      int
 }
 
-const lineTemplate = `{{range .}}{{hyperlink .html_url (printf "#%.0f - %s" .number .title)}}
+const terminalTemplate = `{{range $repo, $items := .}}{{$repo}}
+	{{range $items}}
+  {{hyperlink .url (printf "#%.0f - %s" .number .title)}}
+	{{end}}
 {{end}}`
 
 func parseFlags() Config {
 	var org string
 	var asMarkdown bool
 	var asJSON bool
+	var limit int
 	flag.StringVar(&org, "org", "", "The organization to search for PRs")
 	flag.BoolVar(&asMarkdown, "markdown", false, "Output as markdown")
 	flag.BoolVar(&asJSON, "json", false, "Output as JSON")
+	flag.IntVar(&limit, "limit", 10, "The max number of results")
 	flag.Parse()
 
 	if asMarkdown && asJSON {
@@ -51,29 +65,60 @@ func parseFlags() Config {
 		org:        org,
 		asMarkdown: asMarkdown,
 		asJSON:     asJSON,
+		limit:      limit,
 	}
 
 }
 
-func fetchPRs(client *api.RESTClient, org string) (SearchResponse, error) {
-	searchQuery := "search/issues?q=is:pr+is:open+author:@me"
+func fetchPRs(client *api.GraphQLClient, org string, limit int) (int, ItemListByRepo, error) {
+	searchQuery := "is:pr is:open author:@me"
 	if org != "" {
-		searchQuery += "+org:" + url.QueryEscape(org)
+		searchQuery += " org:" + url.QueryEscape(org)
 	}
 
-	response := SearchResponse{}
-	apiError := client.Get(searchQuery, &response)
-	return response, apiError
+	var query struct {
+		Search struct {
+			Nodes []struct {
+				PullRequest struct {
+					Number     int
+					Url        string
+					Title      string
+					Repository ItemRepository
+				} `graphql:"... on PullRequest"`
+			}
+		} `graphql:"search(query: $query, type: ISSUE, first: $first)"`
+	}
+
+	variables := map[string]any{
+		"query": graphql.String(searchQuery),
+		"first": graphql.Int(min(limit, 100)),
+	}
+
+	apiError := client.Query("Search", &query, variables)
+	count := len(query.Search.Nodes)
+	itemList := make(ItemListByRepo)
+
+	for _, item := range query.Search.Nodes {
+		key := item.PullRequest.Repository.NameWithOwner
+
+		itemList[key] = append(itemList[key], &Item{
+			Title:      item.PullRequest.Title,
+			Url:        item.PullRequest.Url,
+			Number:     item.PullRequest.Number,
+			Repository: item.PullRequest.Repository,
+		})
+	}
+	return count, itemList, apiError
 }
 
-func renderTerminal(templateString string, response SearchResponse) (string, error) {
+func renderTerminal(templateString string, itemList ItemListByRepo) (string, error) {
 	t := term.FromEnv()
 	width, _, err := t.Size()
 	if err != nil {
 		return "", err
 	}
 
-	data, err := json.Marshal(response.Items)
+	data, err := json.Marshal(itemList)
 	if err != nil {
 		return "", err
 	}
@@ -94,33 +139,37 @@ func renderTerminal(templateString string, response SearchResponse) (string, err
 
 func run() (string, error) {
 	cfg := parseFlags()
-	client, err := api.DefaultRESTClient()
+	client, err := api.NewGraphQLClient(api.ClientOptions{})
 	if err != nil {
 		return "", err
 	}
-	response, err := fetchPRs(client, cfg.org)
+	count, itemList, err := fetchPRs(client, cfg.org, cfg.limit)
 	if err != nil {
 		return "", nil
 	}
 
-	if len(response.Items) == 0 {
+	if count == 0 {
 		fmt.Fprintln(os.Stderr, "No PRs found.")
 		return "", nil
 	}
 
 	if cfg.asMarkdown {
 		var str strings.Builder
-		for _, item := range response.Items {
-			str.WriteString(fmt.Sprintf("* [#%d - %s](%s)\n", item.Number, item.Title, item.URL))
+		for key, items := range itemList {
+			str.WriteString(fmt.Sprintf("* **%s**\n", key))
+
+			for _, item := range items {
+				str.WriteString(fmt.Sprintf(". * [#%d - %s](%s)\n", item.Number, item.Title, item.Url))
+			}
 		}
 		return str.String(), nil
 	}
 	if cfg.asJSON {
-		json, err := json.MarshalIndent(response.Items, "", "  ")
+		json, err := json.MarshalIndent(itemList, "", "  ")
 		return string(json), err
 	}
 
-	return renderTerminal(lineTemplate, response)
+	return renderTerminal(terminalTemplate, itemList)
 
 }
 
