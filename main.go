@@ -2,23 +2,26 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
 	"net/url"
 	"os"
+	"strings"
 
 	"github.com/cli/go-gh/v2/pkg/api"
 	"github.com/cli/go-gh/v2/pkg/template"
 	"github.com/cli/go-gh/v2/pkg/term"
+	"github.com/yarlson/pin"
 )
 
 type SearchResponse struct {
 	Items []struct {
-		Title string `json:"title"`
-		URL   string `json:"html_url"`
-		ID    int    `json:"number"`
+		Title  string `json:"title"`
+		URL    string `json:"html_url"`
+		Number int    `json:"number"`
 	} `json:"items"`
 }
 
@@ -63,54 +66,58 @@ func fetchPRs(client *api.RESTClient, org string) (SearchResponse, error) {
 	return response, apiError
 }
 
-func renderTerminal(templateString string, response SearchResponse) error {
+func renderTerminal(templateString string, response SearchResponse) (string, error) {
 	t := term.FromEnv()
 	width, _, err := t.Size()
 	if err != nil {
-		return err
+		return "", err
 	}
 
-	tmpl := template.New(os.Stdout, width, t.IsColorEnabled())
 	data, err := json.Marshal(response.Items)
 	if err != nil {
-		return err
+		return "", err
 	}
+
+	var str strings.Builder
+	tmpl := template.New(&str, width, t.IsColorEnabled())
 
 	if err := tmpl.Parse(templateString); err != nil {
-		return err
+		return "", err
 	}
+
 	if err := tmpl.Execute(bytes.NewReader(data)); err != nil {
-		return err
+		return "", err
 	}
-	return nil
+
+	return str.String(), nil
 }
 
-func run() error {
+func run() (string, error) {
 	cfg := parseFlags()
 	client, err := api.DefaultRESTClient()
 	if err != nil {
-		return err
+		return "", err
 	}
 	response, err := fetchPRs(client, cfg.org)
 	if err != nil {
-		return err
+		return "", nil
 	}
 
 	if len(response.Items) == 0 {
 		fmt.Fprintln(os.Stderr, "No PRs found.")
-		return nil
+		return "", nil
 	}
 
 	if cfg.asMarkdown {
+		var str strings.Builder
 		for _, item := range response.Items {
-			fmt.Printf("* [#%d - %q](%q)\n", item.ID, item.Title, item.URL)
+			str.WriteString(fmt.Sprintf("* [#%d - %s](%s)\n", item.Number, item.Title, item.URL))
 		}
-		return nil
+		return str.String(), nil
 	}
 	if cfg.asJSON {
-		encoder := json.NewEncoder(os.Stdout)
-		encoder.SetIndent("", "  ")
-		return encoder.Encode(response.Items)
+		json, err := json.MarshalIndent(response.Items, "", "  ")
+		return string(json), err
 	}
 
 	return renderTerminal(lineTemplate, response)
@@ -119,7 +126,15 @@ func run() error {
 
 func main() {
 
-	if err := run(); err != nil {
+	p := pin.New("Fetching PRs...", pin.WithWriter(os.Stderr))
+	cancel := p.Start(context.Background())
+	defer cancel()
+	str, err := run()
+
+	p.Stop()
+
+	if err != nil {
 		log.Fatal(err)
 	}
+	fmt.Print(str)
 }

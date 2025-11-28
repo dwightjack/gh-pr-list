@@ -2,7 +2,10 @@ module github.com/dwightjack/gh-pr-list
 
 go 1.25.3
 
-require github.com/cli/go-gh/v2 v2.13.0
+require (
+	github.com/cli/go-gh/v2 v2.13.0
+	github.com/yarlson/pin v0.9.1
+)
 
 require (
 	dario.cat/mergo v1.0.1 // indirect
