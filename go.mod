@@ -4,6 +4,7 @@ go 1.25.3
 
 require (
 	github.com/cli/go-gh/v2 v2.13.0
+	github.com/cli/shurcooL-graphql v0.0.4
 	github.com/yarlson/pin v0.9.1
 )
 
@@ -19,7 +20,6 @@ require (
 	github.com/charmbracelet/x/cellbuf v0.0.13 // indirect
 	github.com/charmbracelet/x/term v0.2.1 // indirect
 	github.com/cli/safeexec v1.0.0 // indirect
-	github.com/cli/shurcooL-graphql v0.0.4 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/henvic/httpretty v0.0.6 // indirect
 	github.com/huandu/xstrings v1.5.0 // indirect
